@@ -1,21 +1,23 @@
 ## Example Usage
 ```
 docker build -t rapids-tf-nightly .
-docker run --rm -it --gpus 1 rapids-tf-nightly
+docker run --rm -it --gpus 1 rapids-tf-nightly python expt.py
 ```
 ## Example Output
 Cleaned up a bit to give you the gist
 ```
-Free memory before TensorFlow initialization: 15998058496 B
-Mem delta from TensorFlow initialization: 465567744 B
+Free device memory before TensorFlow initialization: 15943532544 B
+Free memory delta from TensorFlow initialization: 467664896 B
 
-Free memory before CuDf initialization: 15532490752 B
-Mem delta from CuDf initialization: 675282944 B
+Free device memory before cuDF initialization: 15475867648 B
+Free memory delta from cuDF initialization: 1346371584 B
 
-Free memory before loops: 14857207808 B
-Total mem delta from looping cudf creation 10 times: 0 B
+Free device memory before 10 loops exporting to cudf: 14129496064 B
+Free memory delta from 10 loops exporting to cudf: 0 B
 
-Total mem delta from looping dlpack creation 10 times: 0 B
+Free device memory before 10 loops exporting to dlpack: 14129496064 B
+Free memory delta from 10 loops exporting to dlpack: 0 B
 
-Total mem delta from looping tf creation 10 times: 6710886400 B
+Free device memory before 10 loops exporting to tf: 14129496064 B
+Free memory delta from 10 loops exporting to tf: 13421772800 B
 ```

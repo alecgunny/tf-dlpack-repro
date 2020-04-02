@@ -8,28 +8,57 @@ import numba
 import cudf
 import cupy as cp
 import string
+import argparse
 
 
 def get_mem_info():
   return numba.cuda.current_context().get_memory_info()
 
 
-def get_external_mem_delta(func):
+def get_name(func, **kwargs):
+  if kwargs.get('name') is not None:
+    return kwargs['name']
+
+  else:
+    if kwargs.get('loops') is None:
+      if 'export_to' not in kwargs:
+        return func.__name__
+      else:
+        return '{} as {}'.format(
+          func.__name__, kwargs['export_to'] or 'cudf')
+    else:
+      return '{} loops exporting to {}'.format(
+        kwargs['loops'], kwargs['export_to'] or 'cudf')
+
+
+def report_external_mem_delta(func):
   '''
   quick wrapper function for measuring the change in free
   device memory outside of a function call. Returns this
   along with the output of the function
   '''
   def wrapper(*args, **kwargs):
-    init_free_mem = get_mem_info().free
+    no_report = kwargs.get('no_report', False)
+    if not no_report:
+      init_free_mem = get_mem_info().free
+      print('Free device memory before {}: {} B'.format(
+        get_name(func, **kwargs), init_free_mem)
+      )
+
     output = func(*args, **kwargs)
-    external_mem_delta = init_free_mem - get_mem_info().free
-    return external_mem_delta, output
+
+    if not no_report:
+      external_mem_delta = init_free_mem - get_mem_info().free
+      print('Free memory delta from {}: {} B\n'.format(
+        get_name(func, **kwargs), external_mem_delta)
+      )
+
+    return output
   return wrapper
 
 
-@get_external_mem_delta
-def make_df(num_rows=2**24, num_columns=5, export_to=None):
+@report_external_mem_delta
+def make_df(num_rows=2**24, num_columns=10, export_to=None, **kwargs):
   '''
   Measures the free device memory used by a random
   dataframe with the given numbers of rows and columns,
@@ -59,55 +88,68 @@ def make_df(num_rows=2**24, num_columns=5, export_to=None):
   return init_free_mem - get_mem_info().free
 
 
-@get_external_mem_delta
-def loop_make_df(loops=10, num_rows=2**24, num_cols=5, export_to=None):
+@report_external_mem_delta
+def loop_make_df(
+    loops=10, num_rows=2**24, num_columns=5, export_to=None, **kwargs):
   '''
   iteratively measure the external and internal memory usage of
   creating and possibly exporting a cudf dataframe
   '''
-  external_deltas, internal_deltas = [], []
+  internal_deltas = []
   for _ in range(loops):
-    external_delta, internal_delta = make_df(num_rows, num_cols, export_to)
-    external_deltas.append(external_delta)
-    internal_deltas.append(internal_delta)
-  return external_deltas, internal_deltas
+    internal_deltas.append(
+      make_df(num_rows, num_columns, export_to, no_report=True)
+    )
+  return internal_deltas
 
 
-@get_external_mem_delta
-def initialize_tensorflow():
+@report_external_mem_delta
+def initialize_tensorflow(**kwargs):
   a = tf.constant(0)
 
-# initialize tf eager context
-print('Free memory before TensorFlow initialization: {} B'.format(
-  get_mem_info().free))
-print('Mem delta from TensorFlow initialization: {} B\n'.format(
-  initialize_tensorflow()[0]))
 
-# let cudf initialize
-print('Free memory before CuDf initialization: {} B'.format(
-  get_mem_info().free))
-print('Mem delta from CuDf initialization: {} B\n'.format(
-  make_df()[0]))
+def main(flags):
+  initialize_tensorflow(name='TensorFlow initialization')
+  make_df(name='cuDF initialization', export_to=None, **flags)
 
-# run loops
-print('Free memory before loops: {} B'.format(get_mem_info().free))
-cudf_loop_delta, (cudf_external_deltas, cudf_internal_deltas) = loop_make_df()
-print('Total mem delta from looping cudf creation 10 times: {} B\n'.format(
-  cudf_loop_delta))
+  cudf_internal_deltas = loop_make_df(
+    export_to=None, **flags)
 
-dlpack_loop_delta, (dlpack_external_deltas, dlpack_internal_deltas) = \
-  loop_make_df(export_to='dlpack')
-print('Total mem delta from looping dlpack creation 10 times: {} B\n'.format(
-  dlpack_loop_delta))
+  dlpack_internal_deltas = loop_make_df(
+    export_to='dlpack', **flags)
 
-tf_loop_delta, (tf_external_deltas, tf_internal_deltas) = \
-  loop_make_df(export_to='tf')
-print('Total mem delta from looping tf creation 10 times: {} B\n'.format(
-  tf_loop_delta))
+  tf_internal_deltas = loop_make_df(
+    export_to='tf', **flags)
 
-# make sure that we can account for all the memory lost in tf loops
-assert all([ext_d == int_d for ext_d, int_d in zip(tf_external_deltas, tf_internal_deltas)])
+  # check that the memory lost matches with what we would expect
+  # our tensors to occupy
+  total_tf_mem_lost = sum(tf_internal_deltas)
+  total_expected_mem_lost = (
+    flags['loops']*flags['num_rows']*flags['num_columns']*8 # float64
+  )
+  assert total_tf_mem_lost == total_expected_mem_lost
 
-# verify that it's equal to the memory we expect the float64 tensors
-# we created to use
-assert all([(d / 8) == 5*(2**24) for d in tf_external_deltas])
+
+if __name__ == '__main__':
+  parser = argparse.ArgumentParser()
+  parser.add_argument(
+    '--loops',
+    type=int,
+    default=10,
+    help='Number of iterations of data creation to perform'
+  )
+  parser.add_argument(
+    '--num_rows',
+    type=int,
+    default=2**24,
+    help='Number of rows of data to create at each iteration'
+  )
+  parser.add_argument(
+    '--num_columns',
+    type=int,
+    default=10,
+    help='Number of columns of data to create at each iteration'
+  )
+  FLAGS = parser.parse_args()
+  main(vars(FLAGS))
+

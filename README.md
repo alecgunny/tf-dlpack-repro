@@ -1,3 +1,4 @@
+Quick repro showing memory leakage issues when using TensorFlow experimental `from_dlpack` function with cuDF dataframes. Use case of interest is a function which internally creates a cudf dataframe, then exports its columns to TensorFlow tensors (which would normally be returned). Each successive call to `from_dlpack` seems to increase memory usage, which doesn't happen when just creating the dataframe or even exporting it to dlpack.
 ## Example Usage
 ```
 docker build -t rapids-tf-nightly .

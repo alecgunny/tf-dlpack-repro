@@ -5,7 +5,7 @@ docker run --rm -it --gpus 1 rapids-tf-nightly
 ```
 ## Example Output
 Cleaned up a bit to give you the gist
-``
+```
 Free memory before TensorFlow initialization: 15998058496 B
 Mem delta from TensorFlow initialization: 465567744 B
 

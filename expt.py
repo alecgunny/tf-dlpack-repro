@@ -1,7 +1,6 @@
 import tensorflow as tf
-gpu = tf.config.experimental.list_physical_devices('GPU')[0]
-tf.config.experimental.set_virtual_device_configuration(
-  gpu,
+tf.config.set_logical_device_configuration(
+  tf.config.list_physical_devices('GPU')[0],
   [tf.config.LogicalDeviceConfiguration(memory_limit=8192)]
 )
 

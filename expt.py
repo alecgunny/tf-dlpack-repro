@@ -4,11 +4,16 @@ tf.config.set_logical_device_configuration(
   [tf.config.LogicalDeviceConfiguration(memory_limit=8192)]
 )
 
+import torch
+from torch.utils.dlpack import to_dlpack as pt_to_dlpack
+from torch.utils.dlpack import from_dlpack as pt_from_dlpack
+
 import numba
 import cudf
 import cupy as cp
 import string
 import argparse
+import warnings
 
 
 def get_mem_info():
@@ -27,8 +32,10 @@ def get_name(func, **kwargs):
         return '{} as {}'.format(
           func.__name__, kwargs['export_to'] or 'cudf')
     else:
-      return '{} loops exporting to {}'.format(
-        kwargs['loops'], kwargs['export_to'] or 'cudf')
+      return '{} loops exporting from {} to {}'.format(
+        kwargs['loops'], 
+        kwargs.get('make_in') or 'cudf',
+        kwargs['export_to'] or kwargs.get('make_in') or 'cudf')
 
 
 def report_external_mem_delta(func):
@@ -52,13 +59,28 @@ def report_external_mem_delta(func):
       print('Free memory delta from {}: {} B\n'.format(
         get_name(func, **kwargs), external_mem_delta)
       )
+      if kwargs.get('make_in') == 'pt':
+        print('PyTorch current reserved bytes: {} B\n'.format(
+          torch.cuda.memory_stats()['reserved_bytes.large_pool.current'])
+        )
 
     return output
   return wrapper
 
 
+def cudf_to_dlpack(column):
+  with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    return column.to_dlpack()
+
+
 @report_external_mem_delta
-def make_df(num_rows=2**24, num_columns=10, export_to=None, **kwargs):
+def make_data(
+    make_in='cudf',
+    num_rows=2**24,
+    num_columns=10,
+    export_to=None,
+    **kwargs):
   '''
   Measures the free device memory used by a random
   dataframe with the given numbers of rows and columns,
@@ -70,27 +92,43 @@ def make_df(num_rows=2**24, num_columns=10, export_to=None, **kwargs):
 
   # create a dummy dataframe
   columns = string.ascii_letters[:num_columns]
-  df = cudf.DataFrame(
-    {column: cp.random.randn(num_rows) for column in columns}
-  )
+  if make_in == 'cudf':
+    df = cudf.DataFrame(
+      {column: cp.random.randn(num_rows).astype(cp.float32) for column in columns}
+    )
+    df = {column: df[column] for column in columns}
+  elif make_in == 'pt':
+    df = {column: torch.randn(num_rows, device='cuda:0') for column in columns}
+  else:
+    raise ValueError('make_in must be cudf or pt')
 
-  # optionally export to dlpack and then from there to tf
+  # optionally export to dlpack and then from there to tf or pt
   if export_to is not None:
-    assert export_to in ('tf', 'dlpack')
-    capsules = {column: df[column].to_dlpack() for column in columns}
-    if export_to == 'tf':
-      tensors = {
-        column: tf.experimental.dlpack.from_dlpack(capsule)
-        for column, capsule in capsules.items()
-      }
+    export_fn = cudf_to_dlpack if make_in == 'cudf' else pt_to_dlpack
+
+    try:
+      import_fn = {
+        'tf': tf.experimental.dlpack.from_dlpack,
+        'pt': pt_from_dlpack,
+        'dlpack': lambda x: x
+      }[export_to]
+    except KeyError:
+      raise ValueError('Unrecognized export lib {}'.format(export_to))
+
+    tensors = {column: import_fn(export_fn(x)) for column, x in df.items()}
 
   # return the delta in free device memory
   return init_free_mem - get_mem_info().free
 
 
 @report_external_mem_delta
-def loop_make_df(
-    loops=10, num_rows=2**24, num_columns=5, export_to=None, **kwargs):
+def loop_make_data(
+    loops=10,
+    num_rows=2**24,
+    num_columns=5,
+    make_in='cudf',
+    export_to=None,
+    **kwargs):
   '''
   iteratively measure the external and internal memory usage of
   creating and possibly exporting a cudf dataframe
@@ -98,34 +136,55 @@ def loop_make_df(
   internal_deltas = []
   for _ in range(loops):
     internal_deltas.append(
-      make_df(num_rows, num_columns, export_to, no_report=True)
+      make_data(make_in, num_rows, num_columns, export_to, no_report=True)
     )
   return internal_deltas
 
 
 @report_external_mem_delta
 def initialize_tensorflow(**kwargs):
-  a = tf.constant(0)
+  a = tf.random.normal((1,))
+
+
+@report_external_mem_delta
+def initialize_pytorch(**kwargs):
+  a = torch.randn(1, device='cuda:0')
 
 
 def main(flags):
   initialize_tensorflow(name='TensorFlow initialization')
-  make_df(name='cuDF initialization', export_to=None, **flags)
+  initialize_pytorch(name='PyTorch initialization')
 
-  cudf_internal_deltas = loop_make_df(
-    export_to=None, **flags)
+  make_data(name='cuDF initialization', export_to=None, **flags)
 
-  dlpack_internal_deltas = loop_make_df(
-    export_to='dlpack', **flags)
+  cudf_internal_deltas = loop_make_data(
+    make_in='cudf', export_to=None, **flags)
 
-  tf_internal_deltas = loop_make_df(
-    export_to='tf', **flags)
+  cudf_to_dlpack_internal_deltas = loop_make_data(
+    make_in='cudf', export_to='dlpack', **flags)
+
+  cudf_to_pt_internal_deltas = loop_make_data(
+    make_in='cudf', export_to='pt', **flags)
+
+  pt_internal_deltas = loop_make_data(
+    make_in='pt', export_to=None, **flags)
+
+  pt_to_dlpack_internal_deltas = loop_make_data(
+    make_in='pt', export_to='dlpack', **flags)
+
+  pt_to_tf_internal_deltas = loop_make_data(
+    make_in='pt', export_to='tf', **flags)
+
+  cudf_to_tf_internal_deltas = loop_make_data(
+    make_in='cudf', export_to='tf', **flags)
 
   # check that the memory lost matches with what we would expect
   # our tensors to occupy
-  total_tf_mem_lost = sum(tf_internal_deltas)
+  total_tf_mem_lost = sum(cudf_to_tf_internal_deltas)
   total_expected_mem_lost = (
-    flags['loops']*flags['num_rows']*flags['num_columns']*8 # float64
+    flags['loops']*flags['num_rows']*flags['num_columns']
+    *4 # because float32
+    *2 # because we have TF object and cuDF
   )
   assert total_tf_mem_lost == total_expected_mem_lost
 

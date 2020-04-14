@@ -64,7 +64,7 @@ Free memory delta from 10 loops exporting from pt to pt: 671088640 B
 
 PyTorch current reserved bytes: 671088640 B
 ```
-Next, when we iteratively build PyTorch tensors inside our data creation function, we lose exactly the amount of memory corresponding to the data in *one* call to the function. Why? Because PyTorch's cached allocator reserves this data on the first iteration. Once that iteration is done, it frees the memory for other PyTorch usage, but keeps it reserved on the GPU. Then successive calls to our data creation function iteratively allocate and then free this same block of reserved memory.
+Next, when we iteratively build PyTorch tensors inside our data creation function, we lose exactly the amount of memory corresponding to the data in *one* call to the function (2\*\*24 rows x 10 columns x 4 bytes per float32). Why? Because PyTorch's cached allocator reserves this data on the first iteration. Once that iteration is done, it frees the memory for other PyTorch usage, but keeps it reserved on the GPU. Then successive calls to our data creation function iteratively allocate and then free this same block of reserved memory.
 ```
 Free device memory before 10 loops exporting from pt to dlpack: 23183949824 B
 Free memory delta from 10 loops exporting from pt to dlpack: 0 B
@@ -78,7 +78,7 @@ Free memory delta from 10 loops exporting from pt to tf: 6039797760 B
 
 PyTorch current reserved bytes: 6710886400 B
 ```
-This is where things get interesting. When we export a PyTorch tensor to TensorFlow via dlpack, out memory delta over 10 loops is equal to the data used in total by 9 loops. Why 9? Well, the first iteration uses that same reserved chunk of memory we were using before. However, evidently something about the export to TensorFlow keeps PyTorch from freeing this memory, and so successive data creation calls need to reserve more data to accommodate the new tensors. Note that PyTorch cops to this by telling us that its current reserved byte usage is equal to 10x the amount that it was before.
+This is where things get interesting. When we export a PyTorch tensor to TensorFlow via dlpack, the total memory delta over 10 loops is equal to the data used in total by 9 loops. Why 9? Well, the first iteration uses that same reserved chunk of memory we were using before. However, evidently something about the export to TensorFlow keeps PyTorch from freeing this memory, and so successive data creation calls need to reserve more data to accommodate the new tensors. Note that PyTorch cops to this by telling us that its current reserved byte usage is equal to 10x the amount that it was before.
 ```
 Free device memory before 10 loops exporting from cudf to tf: 17144152064 B
 Free memory delta from 10 loops exporting from cudf to tf: 6710886400 B

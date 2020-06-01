@@ -1,6 +1,4 @@
-Quick repro showing memory leakage issues when using TensorFlow experimental `from_dlpack` function with cuDF dataframes. Use case of interest is a function which internally creates a cudf dataframe, then exports its columns to TensorFlow tensors (which would normally be returned). Each successive call to `from_dlpack` seems to increase memory usage, which doesn't happen when just creating the dataframe or even exporting it to dlpack.
-
-Here we measure the changes in free memory after successive calls to each framework *after* the function creating and exporting the data has exited. When we just create a dataframe or even export it to dlpack, the memory is released once the function exits and we see no change in GPU free memory. However, each `from_dlpack` call permanently reduces available memory  by an amount corresponding precisely to the size of the data created (see the `assert` statement at the bottom of `expt.main`).
+Quick repro showing memory leakage issues when using TensorFlow experimental `from_dlpack` function with cuDF dataframes. Each successive call to `from_dlpack` seems to leave a permanent memory footprint even after the original data source is destroyed. In this repro, we repeatedly use either CuDF or PyTorch to generate some data and then optionally export to a different framework using DLPack before inside a function. We'll measure the deltas in GPU free memory induced by such a function and observe that only when we call TensorFlow's `from_dlpack` do we observe permanent decreases in available free memory, in amounts corresponding precisely to the size of the generated data.
 
 ## Example Usage
 ```
@@ -8,7 +6,7 @@ docker build -t rapids-tf2.2 .
 docker run --rm -it --gpus 1 rapids-tf2.2 python expt.py
 ```
 ## Example Output
-Cleaned up a bit to give you the gist
+Cleaned up a bit to give you the gist (note that when we say we're exporting to a framework from itself, this just means we're not doing any export because I got lazy with the print functions):
 ```
 Free device memory before TensorFlow initialization: 33726332928 B
 Free memory delta from TensorFlow initialization: 8734638080 B

@@ -4,8 +4,8 @@ Here we measure the changes in free memory after successive calls to each framew
 
 ## Example Usage
 ```
-docker build -t rapids-tf-nightly .
-docker run --rm -it --gpus 1 rapids-tf-nightly python expt.py
+docker build -t rapids-tf2.2 .
+docker run --rm -it --gpus 1 rapids-tf2.2 python expt.py
 ```
 ## Example Output
 Cleaned up a bit to give you the gist
